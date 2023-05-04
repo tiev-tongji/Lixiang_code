@@ -1,0 +1,13 @@
+torch~=1.13.0
+numpy~=1.23.5
+tensorboardX~=2.5.1
+torchvision~=0.14.0
+Pillow~=9.4.0
+pyquaternion~=0.9.9
+matplotlib~=3.5.2
+numba~=0.53.0
+PyYAML~=6.0
+kornia~=0.6.5
+geffnet~=1.0.2
+opencv-python~=4.6.0.66
+nuscenes-devkit~=1.1.10

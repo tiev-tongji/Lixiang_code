@@ -1,0 +1,21 @@
+
+model:
+  type: 'Model'
+  pc_range: [  -9.,   -7.,  -2.7,   9.,   7.0,   2.3 ]
+  grid_size: [180, 140, 50]
+
+
+  depth_ffe:
+    frustum_to_voxel:
+      SAMPLER:
+        mode: 'bilinear'
+        padding_mode: 'zeros'
+
+      DISCRETIZE:
+        mode: 'LID'
+        num_bins: 40
+        depth_min: 2.0
+        depth_max: 50.0
+
+
+
