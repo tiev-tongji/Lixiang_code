@@ -1,17 +1,19 @@
 import torch
+import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 
 
 def sem_scal_loss(pred, ssc_target):
+
     # Get softmax probabilities
     pred = F.softmax(pred, dim=1)
     loss = 0
     count = 0
 
-    # mask = ssc_target != 255
-
     n_classes = pred.shape[1]
+    mask = ssc_target != 17
+
     for i in range(0, n_classes):
 
         # Get probability of class i
@@ -19,16 +21,14 @@ def sem_scal_loss(pred, ssc_target):
 
         # Remove unknown voxels
         target_ori = ssc_target
-        target = ssc_target
-
-
+        p = p[mask]
+        target = ssc_target[mask]
 
         completion_target = torch.ones_like(target)
         completion_target[target != i] = 0
 
         completion_target_ori = torch.ones_like(target_ori).float()
         completion_target_ori[target_ori != i] = 0
-
 
         if torch.sum(completion_target) > 0:
             count += 1.0
@@ -62,18 +62,18 @@ def sem_scal_loss(pred, ssc_target):
 
 def geo_scal_loss(pred, ssc_target):
 
-    # Get softmax probabilities
-    # bs = ssc_target[0]
     pred = F.softmax(pred, dim=1)
-
 
     # Compute empty and nonempty probabilities
     empty_probs = pred[:, 0]
     nonempty_probs = 1 - empty_probs
 
-
+    mask = ssc_target != 17
     nonempty_target = ssc_target != 0
-    nonempty_target = nonempty_target.float()
+    nonempty_target = nonempty_target[mask].float()
+
+    nonempty_probs = nonempty_probs[mask]
+    empty_probs = empty_probs[mask]
 
 
     intersection = (nonempty_target * nonempty_probs).sum()
@@ -88,45 +88,38 @@ def geo_scal_loss(pred, ssc_target):
     return geo_loss
 
 
-def O_loss(pred, target):
+def CE_loss(pred, target, class_fre):
 
-    index = torch.nonzero(target, as_tuple=True)
-    o_index = index[0]
+    class_weights = 1 / torch.log(class_fre + 0.001)
 
-    pre = pred[o_index,:]
-    true = target[o_index,:]
-    true = true.squeeze(1)
+    criterion = nn.CrossEntropyLoss(
+        weight=class_weights, ignore_index = 17, reduction="mean"
+    )
 
-    criterion = nn.CrossEntropyLoss()
-    o_loss = criterion(pre, true.long())
+    v_loss = criterion(pred, target.long())
 
-    return o_loss
+    return v_loss
 
 
-def CE_loss(pred, target):
+def T_Loss_3D(target, grid_pre, class_fre):
 
-    batch, class_num, x, y, z = pred.shape
-    pred = pred.reshape(batch * x * y * z, class_num)
-    target = target.reshape(batch * x * y * z, 1)
+    B, C, X, Y, Z = grid_pre.shape
 
-    pre = pred
-    true = target
+    Shape = B * X * Y * Z
+    target = target.reshape(Shape)
+    grid_pre = grid_pre.reshape(Shape, -1)
 
-    o_loss = O_loss(pre, true)
-    true = true.squeeze(1)
+    mask = target != 18
+    target = target[mask]
 
-    criterion = nn.CrossEntropyLoss()
-    v_loss = criterion(pre, true.long())
+    grid_pre = grid_pre[mask,:]
 
-    return v_loss,o_loss, pre, true
+    v_loss = CE_loss(grid_pre, target, class_fre)
 
+    geo_loss = geo_scal_loss(grid_pre, target)
 
-def T_Loss_3D(voxels, grid_pre):
+    sem_loss = sem_scal_loss(grid_pre, target)
 
-    v_loss, o_loss, pre, true= CE_loss(grid_pre, voxels)
+    total_loss = (v_loss + sem_loss + geo_loss) / 3
 
-    geo_loss = geo_scal_loss(pre, true)
-
-    total_loss = (v_loss  + o_loss + geo_loss) / 3
-
-    return total_loss, v_loss, o_loss, geo_loss
+    return total_loss,  v_loss,  sem_loss, geo_loss
