@@ -1,13 +1,16 @@
 import os
 import torch
-import torchvision
 import numpy as np
+import torchvision
 from PIL import Image
 from nuscenes import NuScenes
 from pyquaternion import Quaternion
 from torch.utils.data import Dataset
 from torchvision.transforms import Resize
+from data_process.fov_true import Fov_true
 from nuscenes.utils.splits import create_splits_scenes
+from data_process.lidar_coordinate import Lidar_coordinate
+from data_process.gener_fov_project import Gener_fov_project
 
 
 class NuscData(Dataset):
@@ -19,23 +22,24 @@ class NuscData(Dataset):
         self.scenes = self.get_scenes()
         self.ixes = self.prepro()
 
+
         self.normalise_image = torchvision.transforms.Compose(
             [torchvision.transforms.ToTensor(),
              torchvision.transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             ]
         )
 
+
     def get_scenes(self):
-        # filter by scene split
 
         split = {
             'v1.0-trainval': {True: 'train', False: 'val'},
             'v1.0-mini': {True: 'mini_train', False: 'mini_val'},
         }[self.nusc.version][self.is_train]
-
         scenes = create_splits_scenes()[split]
 
         return scenes
+
 
     def prepro(self):
         samples = [samp for samp in self.nusc.sample]
@@ -51,14 +55,26 @@ class NuscData(Dataset):
 
 
 
+    def get_lidar_RT(self, rec):
+
+        sensor = 'LIDAR_TOP'
+        sensor_sample = self.nusc.get('sample_data', rec['data'][sensor])
+        sensor = self.nusc.get('calibrated_sensor', sensor_sample['calibrated_sensor_token'])
+        lidar_T = torch.Tensor(sensor['translation'])
+        lidar_R = torch.Tensor(Quaternion(sensor['rotation']).rotation_matrix)
+
+        return lidar_R, lidar_T
+
+
+
     def get_occ_data(self, rec):
 
         if self.is_train:
-            dataroot = '/.../nuscenes_occ'
+            dataroot = '/..../nuscenes_occ/train/nuscenes_occ'
             sum = 28130
 
         else:
-            dataroot = '/.../nuscenes_occ'
+            dataroot = '/..../nuscenes_occ/val/nuscenes_occ'
             sum = 6019
 
         occ = []
@@ -73,18 +89,18 @@ class NuscData(Dataset):
 
         for o in occ:
 
-            occ_zero = torch.zeros([200, 200, 16], dtype=torch.int8)
+            occ_zero = torch.zeros([200, 200, 16], dtype=torch.int16)
+            occ_zero[:] = 17
             N = np.shape(o)[0]
 
+
             for i in range(N):
-                # print(o[i, 0], o[i, 1], o[i, 2], o[i, 3])
+
                 x = o[i, 0]
                 y = o[i, 1]
                 z = o[i, 2]
 
-                if o[i, 3] > 0 & o[i, 3] <= 16:
-                    occ_zero[x, y, z] = 1
-
+                occ_zero[x, y, z] = o[i, 3]
 
 
             Occ.append(occ_zero)
@@ -92,34 +108,15 @@ class NuscData(Dataset):
         occ_ = torch.stack(Occ)
         occ_ = torch.squeeze(occ_,0)
 
-
-
         return occ_
-
-    def get_lidar_RT(self, rec):
-
-        if self.is_train:
-            dataroot = '/.../nuscenes_occ'
-            sum = 28130
-
-        else:
-            dataroot = '/.../nuscenes_occ'
-            sum = 6019
-
-        sensor = 'LIDAR_TOP'
-        sensor_sample = self.nusc.get('sample_data', rec['data'][sensor])
-        sensor = self.nusc.get('calibrated_sensor', sensor_sample['calibrated_sensor_token'])
-        tran = torch.Tensor(sensor['translation'])
-        rot = torch.Tensor(Quaternion(sensor['rotation']).rotation_matrix)
-
-        lidar_R = rot
-        lidar_T = tran
-
-        return lidar_R, lidar_T
-
 
 
     def get_image_data(self, rec, cams):
+
+        imgs = []
+        rots = []
+        trans = []
+        intrins = []
 
         def Resize_RGB(Img):
             torch_resize = Resize([225, 400])
@@ -127,14 +124,8 @@ class NuscData(Dataset):
 
             return img
 
-        imgs = []
-        rots = []
-        trans = []
-        intrins = []
         for cam in cams:
             cam_sample = self.nusc.get('sample_data', rec['data'][cam])
-
-
             imgname = os.path.join(self.nusc.dataroot, cam_sample['filename'])
             img = Image.open(imgname)
 
@@ -151,9 +142,9 @@ class NuscData(Dataset):
 
             # normalise_img = self.normalise_image(img)
             imgs.append(normalise_img)
-            intrins.append(intrin)  # 3,3
-            rots.append(rot)  # 3,3
-            trans.append(tran)  # 3,
+            intrins.append(intrin)     # 3,3
+            rots.append(rot)           # 3,3
+            trans.append(tran)         # 3,
 
         imgs = torch.stack(imgs)
         rots = torch.stack(rots)
@@ -162,6 +153,7 @@ class NuscData(Dataset):
 
 
         return imgs, rots, trans, intrins
+
 
 
 class SegmentationData(NuscData):
@@ -177,25 +169,32 @@ class SegmentationData(NuscData):
     def __getitem__(self, index):
 
         rec = self.ixes[index]  # 按索引取出sample
+        # cams = ['CAM_BACK']
         cams = ['CAM_FRONT_LEFT', 'CAM_FRONT', 'CAM_FRONT_RIGHT', 'CAM_BACK_LEFT', 'CAM_BACK', 'CAM_BACK_RIGHT']
 
         imgs, rots, trans, intrins = self.get_image_data(rec, cams)  # 读取图像数据、相机参数和数据增强的像素坐标映射关系
 
         occ = self.get_occ_data(rec)
+        lidar_R, lidar_T = self.get_lidar_RT(rec)
+        lidar_coordinate_R, lidar_coordinate_T = Lidar_coordinate(rots, trans, lidar_R, lidar_T)
 
-        # lidar_R, lidar_T = self.get_lidar_RT(rec)
 
-        return imgs, rots, trans, intrins, occ,  # lidar_R, lidar_T
+        fov_mask, projected_pix = Gener_fov_project(intrins, lidar_coordinate_R, lidar_coordinate_T)
+
+        Occ = Fov_true(occ, fov_mask)
+
+
+        return imgs, Occ, fov_mask, projected_pix,
+
 
 
 def compile_data(batch):
 
 
-    nusc = NuScenes(version='v1.0-trainval', dataroot='/..../nusense', verbose=True)
+    nusc = NuScenes(version='v1.0-trainval', dataroot='/... /nusense', verbose=True)
 
     traindata = SegmentationData(nusc=nusc, is_train=True)
     valdata = SegmentationData(nusc=nusc, is_train=False)
-
 
 
     trainloader = torch.utils.data.DataLoader(traindata, batch_size = batch, shuffle = True, num_workers = 4, drop_last = False)
@@ -211,27 +210,3 @@ def compile_data(batch):
 
 
 
-# trainloader,valloader = compile_data(batch=1)
-# i = 0
-# for batchi, (imgs, rots, trans, intrins, occ, lidar_R, lidar_T) in enumerate(valloader):
-#
-#
-#     # print('imgs.shape:', imgs.shape)
-#     # print('rots.shape:', rots[0,:].shape)
-#     # print('trans.shape:', trans[0,:].shape)
-#     # print('intrins.shape:', intrins.shape)
-#     # print('occ.shape:', occ.shape)
-#     # print('lidar_R.shape:', lidar_R[0,:].shape)
-#     # print('lidar_T.shape:', lidar_T[0,:].shape)
-#
-#     if i == :
-
-#         np.save("/...../R.npy", rots)
-#         np.save("/...../T.npy", trans)
-#         np.save("/...../lidar_R.npy", lidar_R)
-#         np.save("/...../lidar_T.npy", lidar_T)
-#         np.save("/...../I.npy", intrins)
-#
-#         break
-#
-# print('结束')
